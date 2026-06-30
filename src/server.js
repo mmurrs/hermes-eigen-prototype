@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { buildDomain, commandTypes, normalizeCommandMessage, verifyCommandSignature } from './eip712.js';
 import { runAgentCommand } from './runner.js';
 import { JsonStore } from './store.js';
+import { renderLanding } from './landing.js';
 
 const commandBodySchema = z.object({
   agentId: z.string().min(1),
@@ -20,6 +21,22 @@ export async function buildServer(config = loadConfig()) {
   const store = new JsonStore(config.dataDir);
   await store.init();
   await app.register(cors, { origin: true });
+
+  const appId = process.env.EIGEN_APP_ID || '';
+  const verifyBaseUrl = process.env.EIGEN_VERIFY_URL || 'https://verify.eigencloud.xyz/app';
+  const repoUrl = process.env.SOURCE_REPO_URL || 'https://github.com/csmoove530/hermes-eigen-prototype';
+
+  app.get('/', async (request, reply) => {
+    reply.type('text/html; charset=utf-8');
+    return renderLanding({
+      config,
+      domain: buildDomain(config),
+      commandCount: store.listCommands(100).length,
+      appId,
+      verifyUrl: appId ? `${verifyBaseUrl}/${appId}` : verifyBaseUrl,
+      repoUrl
+    });
+  });
 
   app.get('/health', async () => ({
     status: 'ok',
