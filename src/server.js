@@ -26,6 +26,15 @@ export async function buildServer(config = loadConfig()) {
   const verifyBaseUrl = process.env.EIGEN_VERIFY_URL || 'https://verify.eigencloud.xyz/app';
   const repoUrl = process.env.SOURCE_REPO_URL || 'https://github.com/csmoove530/hermes-eigen-prototype';
 
+  // Demo helper is double-gated — only active when a DEMO_PRIVATE_KEY is configured
+  // AND the runner is in mock mode (an accepted command only echoes text, moves nothing).
+  const demoEnabled = Boolean(config.demoPrivateKey) && config.runnerMode === 'mock';
+  let demoAccount = null;
+  if (demoEnabled) {
+    const { privateKeyToAccount } = await import('viem/accounts');
+    demoAccount = privateKeyToAccount(config.demoPrivateKey);
+  }
+
   app.get('/', async (request, reply) => {
     reply.type('text/html; charset=utf-8');
     return renderLanding({
@@ -34,7 +43,8 @@ export async function buildServer(config = loadConfig()) {
       commandCount: store.listCommands(100).length,
       appId,
       verifyUrl: appId ? `${verifyBaseUrl}/${appId}` : verifyBaseUrl,
-      repoUrl
+      repoUrl,
+      demoEnabled
     });
   });
 
@@ -66,6 +76,40 @@ export async function buildServer(config = loadConfig()) {
       domain: buildDomain(config),
       primaryType: 'AgentCommand',
       types: commandTypes
+    };
+  });
+
+  app.post('/demo/sign', async (request, reply) => {
+    if (!demoEnabled) {
+      return reply.code(404).send({ error: 'demo_disabled' });
+    }
+    const scope = 'chat';
+    const command =
+      typeof request.body?.command === 'string' && request.body.command.trim()
+        ? request.body.command.trim().slice(0, 200)
+        : 'Summarize current agent status';
+    const message = {
+      agentId: config.agentId,
+      command,
+      scope,
+      nonce: BigInt(Date.now()),
+      deadline: BigInt(Math.floor(Date.now() / 1000 + 300))
+    };
+    const signature = await demoAccount.signTypedData({
+      domain: buildDomain(config),
+      types: commandTypes,
+      primaryType: 'AgentCommand',
+      message
+    });
+    return {
+      note: 'Signed with the public test key for demo purposes. POST this to /command.',
+      owner: demoAccount.address,
+      agentId: message.agentId,
+      command: message.command,
+      scope: message.scope,
+      nonce: message.nonce.toString(),
+      deadline: message.deadline.toString(),
+      signature
     };
   });
 

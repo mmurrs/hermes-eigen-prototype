@@ -48,6 +48,7 @@ export function loadConfig() {
     ownerAddresses,
     dataDir: process.env.DATA_DIR || process.env.USER_PERSISTENT_DATA_PATH || '.data',
     runnerMode: process.env.RUNNER_MODE || 'mock',
+    demoPrivateKey: process.env.DEMO_PRIVATE_KEY || '',
     hermesCommand: process.env.HERMES_COMMAND || 'hermes',
     hermesTimeoutMs: readInt('HERMES_TIMEOUT_MS', 120000),
     maxCommandBytes: readInt('MAX_COMMAND_BYTES', 4096),

@@ -14,7 +14,7 @@ function shorten(addr) {
   return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
 }
 
-export function renderLanding({ config, domain, commandCount, appId, verifyUrl, repoUrl }) {
+export function renderLanding({ config, domain, commandCount, appId, verifyUrl, repoUrl, demoEnabled }) {
   const scopes = config.allowedScopes.map((s) => `<code>${esc(s)}</code>`).join(' ');
   const owners = config.ownerAddresses.length
     ? config.ownerAddresses
@@ -81,6 +81,34 @@ export function renderLanding({ config, domain, commandCount, appId, verifyUrl, 
   a:hover { text-decoration: underline; }
   footer { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; display: flex; gap: 18px; flex-wrap: wrap; }
   .note { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .demo { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  .demo-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .demo input {
+    flex: 1; min-width: 220px; background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+    font: 13px/1.5 var(--mono); padding: 9px 12px; border-radius: 8px;
+  }
+  .demo input:focus { outline: none; border-color: var(--accent2); }
+  .btn {
+    background: var(--accent); color: #04140d; border: 0; font-weight: 600; font-size: 13px;
+    padding: 9px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; white-space: nowrap;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .steps { display: grid; gap: 8px; margin-top: 14px; }
+  .step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; font-size: 13px; }
+  .step .ix {
+    width: 22px; height: 22px; border-radius: 50%; background: var(--bg); border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  }
+  .step.ok .ix { border-color: var(--accent); color: var(--accent); }
+  .step.bad .ix { border-color: var(--warn); color: var(--warn); }
+  .step.run .ix { border-color: var(--accent2); color: var(--accent2); }
+  .step .lbl { color: var(--ink); }
+  .step .sub { color: var(--muted); }
+  .step pre {
+    margin: 6px 0 0; background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 9px 11px; overflow-x: auto; font-family: var(--mono); font-size: 11.5px; color: var(--accent2); white-space: pre-wrap; word-break: break-word;
+  }
   @media (max-width: 560px) { .two { grid-template-columns: 1fr; } .ep { grid-template-columns: 52px 1fr; } th { width: 44%; } }
 </style>
 </head>
@@ -104,6 +132,20 @@ POST /command  ──►  verify signature · check nonce · check scope · chec
 Runner (${esc(config.runnerMode)})  ──►  audit record (command hashed, not stored in plaintext)</pre>
   <p class="note">Two wallets, separated by design: the <strong>owner wallet</strong> (human/governance, signs intent, never in the TEE)
   and the <strong>agent wallet</strong> (derived inside the TEE from its provisioned mnemonic, executes permitted actions).</p>
+
+  ${demoEnabled ? `
+  <h2>Try it live</h2>
+  <div class="demo">
+    <p class="note" style="margin-top:0">Runs against this deployment's real <code>POST /command</code> endpoint.
+    For this demo, the well-known public test key signs on your behalf (safe — the runner is in <code>mock</code> mode,
+    so an accepted command only echoes text and moves nothing).</p>
+    <div class="demo-row">
+      <input id="cmd" value="Summarize current agent status" maxlength="200" aria-label="Command text">
+      <button class="btn" id="run">Sign &amp; submit →</button>
+    </div>
+    <div class="steps" id="steps"></div>
+  </div>
+  ` : ''}
 
   <h2>Live configuration</h2>
   <table>
@@ -146,6 +188,77 @@ Runner (${esc(config.runnerMode)})  ──►  audit record (command hashed, not
     ${appId ? `<a href="${esc(verifyUrl)}">Verify on EigenCloud ↗</a>` : ''}
   </footer>
 </div>
+${demoEnabled ? `<script>
+(function () {
+  var btn = document.getElementById('run');
+  var steps = document.getElementById('steps');
+  if (!btn) return;
+
+  function row(cls, label, sub, body) {
+    var d = document.createElement('div');
+    d.className = 'step ' + cls;
+    var ix = cls === 'ok' ? '✓' : cls === 'bad' ? '✕' : cls === 'run' ? '•' : '·';
+    d.innerHTML = '<div class="ix">' + ix + '</div><div><div class="lbl"></div>'
+      + '<div class="sub"></div></div>';
+    d.querySelector('.lbl').textContent = label;
+    d.querySelector('.sub').textContent = sub || '';
+    if (body) {
+      var pre = document.createElement('pre');
+      pre.textContent = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+      d.querySelector('div:last-child').appendChild(pre);
+    }
+    steps.appendChild(d);
+    return d;
+  }
+
+  async function postJson(path, payload) {
+    var res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload || {})
+    });
+    var json = await res.json().catch(function () { return {}; });
+    return { status: res.status, json: json };
+  }
+
+  btn.addEventListener('click', async function () {
+    btn.disabled = true;
+    steps.innerHTML = '';
+    var command = (document.getElementById('cmd').value || '').trim() || 'Summarize current agent status';
+    try {
+      row('run', '1. Requesting EIP-712 signature', 'Signed server-side with the public test key…');
+      var signed = await postJson('/demo/sign', { command: command });
+      if (signed.status !== 200) throw new Error('sign failed: ' + JSON.stringify(signed.json));
+      steps.lastChild.className = 'step ok';
+      steps.lastChild.querySelector('.sub').textContent = 'owner ' + signed.json.owner + ' · nonce ' + signed.json.nonce;
+
+      row('run', '2. Submitting to POST /command', 'The TEE verifies the signature, scope, deadline, and nonce…');
+      var accepted = await postJson('/command', signed.json);
+      var okStep = steps.lastChild;
+      okStep.className = accepted.status === 200 ? 'step ok' : 'step bad';
+      okStep.querySelector('.sub').textContent = 'HTTP ' + accepted.status
+        + (accepted.json.result ? ' · ' + accepted.json.result.status : '');
+      okStep.querySelector('div:last-child').appendChild(Object.assign(document.createElement('pre'), {
+        textContent: JSON.stringify(accepted.json.result || accepted.json, null, 2)
+      }));
+
+      row('run', '3. Replaying the same signed command', 'Re-submitting the identical payload…');
+      var replay = await postJson('/command', signed.json);
+      var rStep = steps.lastChild;
+      rStep.className = replay.status === 409 ? 'step ok' : 'step bad';
+      rStep.querySelector('.sub').textContent = 'HTTP ' + replay.status + ' — '
+        + (replay.json.error || 'unexpected') + (replay.status === 409 ? ' (replay protection works ✓)' : '');
+      rStep.querySelector('div:last-child').appendChild(Object.assign(document.createElement('pre'), {
+        textContent: JSON.stringify(replay.json, null, 2)
+      }));
+    } catch (e) {
+      row('bad', 'Error', String(e && e.message || e));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+</script>` : ''}
 </body>
 </html>`;
 }
